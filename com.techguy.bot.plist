@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Замени USERNAME на своё имя пользователя macOS (команда: whoami) -->
+    <key>Label</key>
+    <string>com.techguy.bot</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/USERNAME/techguy-venv/bin/python</string>
+        <string>/Users/USERNAME/tech-guy-bot/bot.py</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/USERNAME/tech-guy-bot</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/USERNAME/TechGuy/bot.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/USERNAME/TechGuy/bot.error.log</string>
+</dict>
+</plist>
