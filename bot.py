@@ -9,6 +9,8 @@ TechGuy — личный Telegram-агент для предустановки �
   - ссылка на GitHub-репозиторий -> git clone / git pull в ~/TechGuy/repos
   - прямая ссылка на файл -> скачивание в ~/TechGuy/downloads
   - сообщение вида "brew install htop" / "brew install --cask firefox" -> установка
+  - ссылка на стрим + отрезок времени -> вырезает фрагмент (yt-dlp) в ~/TechGuy/downloads
+      пример: https://twitch.tv/videos/123456 05:00:00-06:30:00
   - /status -> состояние бота и диска
 
 Безопасность:
@@ -42,7 +44,7 @@ ALLOWED_USER_ID = int(os.getenv("ALLOWED_USER_ID", "0"))
 BASE_DIR = Path(os.getenv("BASE_DIR", "~/TechGuy")).expanduser()
 DOWNLOADS_DIR = BASE_DIR / "downloads"
 REPOS_DIR = BASE_DIR / "repos"
-COMMAND_TIMEOUT = int(os.getenv("COMMAND_TIMEOUT", "600"))  # секунд на одну команду
+COMMAND_TIMEOUT = int(os.getenv("COMMAND_TIMEOUT", "3600"))  # секунд на одну команду
 
 DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 REPOS_DIR.mkdir(parents=True, exist_ok=True)
@@ -52,6 +54,17 @@ BREW = (
     "/opt/homebrew/bin/brew"
     if Path("/opt/homebrew/bin/brew").exists()
     else (shutil.which("brew") or "brew")
+)
+
+# yt-dlp и ffmpeg (полные пути, если стоят через Homebrew на Apple Silicon)
+YTDLP = (
+    "/opt/homebrew/bin/yt-dlp"
+    if Path("/opt/homebrew/bin/yt-dlp").exists()
+    else (shutil.which("yt-dlp") or "yt-dlp")
+)
+ENSURE_YTDLP_CMD = (
+    f"command -v yt-dlp >/dev/null 2>&1 && command -v ffmpeg >/dev/null 2>&1 "
+    f"|| {shlex.quote(BREW)} install yt-dlp ffmpeg"
 )
 
 # Команды, которые бот откажется выполнять при любом раскладе
@@ -87,6 +100,27 @@ def forbidden_reason(cmd: str) -> bool:
 def classify(text: str) -> list[tuple[str, str]] | None:
     """Превращает сообщение в план: список (человеческое описание, shell-команда)."""
     text = text.strip()
+
+    # 0) Клип из стрима: "<ссылка> 05:00:00-06:30:00" (YouTube/Twitch VOD и т.п.)
+    m = re.search(
+        r"(https?://\S+)\s+(\d{1,2}:\d{2}(?::\d{2})?)\s*-\s*(\d{1,2}:\d{2}(?::\d{2})?)",
+        text,
+    )
+    if m:
+        url, t_start, t_end = m.group(1), m.group(2), m.group(3)
+        safe_name = f"clip_{t_start.replace(':', '')}-{t_end.replace(':', '')}"
+        dest_tpl = str(DOWNLOADS_DIR / f"{safe_name}.%(ext)s")
+        ytdlp_cmd = (
+            f"{shlex.quote(YTDLP)} --download-sections \"*{t_start}-{t_end}\" "
+            f"-f \"bv*[height<=1080]+ba/b[height<=1080]/b\" --merge-output-format mp4 "
+            f"--no-playlist -o {shlex.quote(dest_tpl)} {shlex.quote(url)}"
+        )
+        return [
+            ("Проверяю yt-dlp и ffmpeg (поставлю, если нет)", ENSURE_YTDLP_CMD),
+            (f"Скачиваю фрагмент {t_start} — {t_end} в {DOWNLOADS_DIR}", ytdlp_cmd),
+            ("Показываю готовый файл",
+             f"ls -lh {shlex.quote(str(DOWNLOADS_DIR))}/{safe_name}.*"),
+        ]
 
     # 1) GitHub-репозиторий
     m = re.search(r"(?:https?://)?(?:www\.)?github\.com/([\w.-]+)/([\w.-]+)", text)
@@ -157,7 +191,9 @@ async def on_start(message: Message) -> None:
         "Кидай:\n"
         "• ссылку на GitHub — склонирую в ~/TechGuy/repos\n"
         "• ссылку на файл — скачаю в ~/TechGuy/downloads\n"
-        "• <code>brew install &lt;пакет&gt;</code> — поставлю через Homebrew\n\n"
+        "• <code>brew install &lt;пакет&gt;</code> — поставлю через Homebrew\n"
+        "• <b>ссылку на стрим + время</b> — вырежу фрагмент, напр.:\n"
+        "<code>https://twitch.tv/videos/123 05:00:00-06:30:00</code>\n\n"
         "Каждое действие сначала покажу планом и спрошу подтверждение. /status — состояние."
     )
 
@@ -185,8 +221,9 @@ async def on_text(message: Message) -> None:
     if not plan:
         await message.answer(
             "Не понял, что с этим делать 🤔\n"
-            "Пришли ссылку на GitHub, ссылку на файл или команду вида "
-            "<code>brew install htop</code>."
+            "Пришли ссылку на GitHub, ссылку на файл, команду вида "
+            "<code>brew install htop</code> или ссылку на стрим с отрезком: "
+            "<code>https://twitch.tv/videos/123 05:00:00-06:30:00</code>."
         )
         return
 
