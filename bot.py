@@ -149,6 +149,15 @@ def render_bar(pct: float) -> str:
     return "[" + "#" * filled + "-" * (BAR_WIDTH - filled) + "]"
 
 
+def clean_tmp() -> None:
+    """Сносит всё содержимое временной папки нарезки (недокачки, .part, фрагменты)."""
+    for p in TMP_DIR.glob("*"):
+        try:
+            p.unlink() if p.is_file() or p.is_symlink() else shutil.rmtree(p)
+        except Exception:
+            pass
+
+
 def parse_hms(s: str) -> int:
     """'1:23:45' или '23:45' -> секунды."""
     sec = 0
@@ -241,6 +250,8 @@ async def run_plan(plan: list[tuple[str, str]], status: Message | None = None) -
 
 async def run_split(url: str, t_start: int, t_end: int | None, status: Message) -> None:
     """Режет видео на части по CHUNK_SECONDS и присылает каждую в чат."""
+    clean_tmp()  # на случай прошлого обрыва — стираем старые недокачки
+
     # 0) убедиться, что yt-dlp и ffmpeg на месте
     out, ok, _ = await exec_cmd(ENSURE_YTDLP_CMD, "Проверяю yt-dlp и ffmpeg (поставлю, если нет)", status)
     if not ok:
@@ -252,7 +263,7 @@ async def run_split(url: str, t_start: int, t_end: int | None, status: Message) 
         total = t_end - t_start
     else:
         out, ok, _ = await exec_cmd(
-            f"{shlex.quote(YTDLP)} --no-playlist --no-warnings --get-duration {shlex.quote(url)}",
+            f"{shlex.quote(YTDLP)} --no-playlist --no-warnings --no-cache-dir --get-duration {shlex.quote(url)}",
             "Определяю длительность видео", status)
         if not ok or not out:
             await status.edit_text(
@@ -288,7 +299,7 @@ async def run_split(url: str, t_start: int, t_end: int | None, status: Message) 
         e = min(s + CHUNK_SECONDS, t_start + total)
         part_tpl = str(TMP_DIR / f"part_{i + 1:02d}.%(ext)s")
         cmd = (
-            f"{shlex.quote(YTDLP)} --newline --download-sections \"*{fmt_hms(s)}-{fmt_hms(e)}\" "
+            f"{shlex.quote(YTDLP)} --newline --no-cache-dir --download-sections \"*{fmt_hms(s)}-{fmt_hms(e)}\" "
             f"-f \"bv*[height<=720]+ba/b[height<=720]/b\" --merge-output-format mp4 "
             f"--no-playlist -o {shlex.quote(part_tpl)} {shlex.quote(url)}"
         )
@@ -296,6 +307,7 @@ async def run_split(url: str, t_start: int, t_end: int | None, status: Message) 
         files = sorted(TMP_DIR.glob(f"part_{i + 1:02d}.*"))
         if not ok or not files:
             tail = escape(out[-1500:]) or "(нет вывода)"
+            clean_tmp()  # подчистить недокачанные фрагменты
             await status.edit_text(
                 f"❌ Часть {i + 1}/{n} не скачалась{' (таймаут)' if timed_out else ''}.\n"
                 f"<code>{tail}</code>\n\nОтправлено до ошибки: {sent} из {n}.")
@@ -332,6 +344,7 @@ async def run_split(url: str, t_start: int, t_end: int | None, status: Message) 
         finally:
             fpath.unlink(missing_ok=True)
 
+    clean_tmp()  # финальная уборка: не оставляем ни одного временного файла
     await status.edit_text(
         f"✅ <b>Готово:</b> отправил {sent} из {n} частей. "
         f"Временные файлы удалены, на диске ничего не храню.")
@@ -351,7 +364,7 @@ def classify(text: str) -> list[tuple[str, str]] | None:
         safe_name = f"clip_{t_start.replace(':', '')}-{t_end.replace(':', '')}"
         dest_tpl = str(DOWNLOADS_DIR / f"{safe_name}.%(ext)s")
         ytdlp_cmd = (
-            f"{shlex.quote(YTDLP)} --newline --download-sections \"*{t_start}-{t_end}\" "
+            f"{shlex.quote(YTDLP)} --newline --no-cache-dir --download-sections \"*{t_start}-{t_end}\" "
             f"-f \"bv*[height<=1080]+ba/b[height<=1080]/b\" --merge-output-format mp4 "
             f"--no-playlist -o {shlex.quote(dest_tpl)} {shlex.quote(url)}"
         )
