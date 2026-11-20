@@ -97,6 +97,11 @@ ENSURE_YTDLP_CMD = (
     f"|| {shlex.quote(BREW)} install yt-dlp ffmpeg"
 )
 
+# Cookies браузера для YouTube ("Sign in to confirm you're not a bot"):
+# YTDLP_COOKIES=safari|chrome|firefox|... в .env -> флаг --cookies-from-browser
+_YTDLP_COOKIES = os.getenv("YTDLP_COOKIES", "").strip().lower()
+COOKIES_OPT = f" --cookies-from-browser {shlex.quote(_YTDLP_COOKIES)}" if _YTDLP_COOKIES else ""
+
 # Команды, которые бот откажется выполнять при любом раскладе
 FORBIDDEN_PATTERNS = [
     r"\bsudo\b",
@@ -263,7 +268,7 @@ async def run_split(url: str, t_start: int, t_end: int | None, status: Message) 
         total = t_end - t_start
     else:
         out, ok, _ = await exec_cmd(
-            f"{shlex.quote(YTDLP)} --no-playlist --no-warnings --no-cache-dir --get-duration {shlex.quote(url)}",
+            f"{shlex.quote(YTDLP)} --no-playlist --no-warnings --no-cache-dir{COOKIES_OPT} --get-duration {shlex.quote(url)}",
             "Определяю длительность видео", status)
         if not ok or not out:
             await status.edit_text(
@@ -301,7 +306,7 @@ async def run_split(url: str, t_start: int, t_end: int | None, status: Message) 
         cmd = (
             f"{shlex.quote(YTDLP)} --newline --no-cache-dir --download-sections \"*{fmt_hms(s)}-{fmt_hms(e)}\" "
             f"-f \"bv*[height<=720]+ba/b[height<=720]/b\" --merge-output-format mp4 "
-            f"--no-playlist -o {shlex.quote(part_tpl)} {shlex.quote(url)}"
+            f"--no-playlist{COOKIES_OPT} -o {shlex.quote(part_tpl)} {shlex.quote(url)}"
         )
         out, ok, timed_out = await exec_cmd(cmd, f"Часть {i + 1}/{n}: качаю {fmt_hms(s)} — {fmt_hms(e)}", status)
         files = sorted(TMP_DIR.glob(f"part_{i + 1:02d}.*"))
@@ -366,7 +371,7 @@ def classify(text: str) -> list[tuple[str, str]] | None:
         ytdlp_cmd = (
             f"{shlex.quote(YTDLP)} --newline --no-cache-dir --download-sections \"*{t_start}-{t_end}\" "
             f"-f \"bv*[height<=1080]+ba/b[height<=1080]/b\" --merge-output-format mp4 "
-            f"--no-playlist -o {shlex.quote(dest_tpl)} {shlex.quote(url)}"
+            f"--no-playlist{COOKIES_OPT} -o {shlex.quote(dest_tpl)} {shlex.quote(url)}"
         )
         return [
             ("Проверяю yt-dlp и ffmpeg (поставлю, если нет)", ENSURE_YTDLP_CMD),
@@ -433,12 +438,14 @@ async def on_status(message: Message) -> None:
     uptime_min = int(time.time() - START_TIME) // 60
     usage = shutil.disk_usage("/")
     api_mode = f"локальный Bot API (до {MAX_SEND_MB} МБ)" if session else f"облачный API (до {MAX_SEND_MB} МБ)"
+    cookies_mode = _YTDLP_COOKIES or "выключены"
     await message.answer(
         f"🤖 Живой, аптайм {uptime_min} мин.\n"
         f"💾 Диск: свободно {usage.free / 2**30:.1f} ГБ из {usage.total / 2**30:.1f} ГБ\n"
         f"📁 Загрузки: <code>{DOWNLOADS_DIR}</code>\n"
         f"📁 Репозитории: <code>{REPOS_DIR}</code>\n"
-        f"📤 Отправка файлов: {api_mode}"
+        f"📤 Отправка файлов: {api_mode}\n"
+        f"🍪 Cookies для YouTube: {cookies_mode}"
     )
 
 
@@ -536,6 +543,7 @@ async def main() -> None:
             print(f"Предупреждение: log_out на локальный Bot API не удался: {e}")
     print(f"TechGuy запущен. Владелец: {ALLOWED_USER_ID}. База: {BASE_DIR}. Загрузки: {DOWNLOADS_DIR}")
     print(f"Отправка файлов: {'локальный Bot API, до 2000 МБ' if session else 'облачный API, до 49 МБ'}")
+    print(f"Cookies для YouTube: {_YTDLP_COOKIES or 'выключены'}")
     await dp.start_polling(bot)
 
 
