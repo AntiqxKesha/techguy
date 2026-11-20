@@ -7,10 +7,11 @@ TechGuy — личный Telegram-агент для предустановки �
 
 Умеет (MVP):
   - ссылка на GitHub-репозиторий -> git clone / git pull в ~/TechGuy/repos
-  - прямая ссылка на файл -> скачивание в ~/TechGuy/downloads
+  - прямая ссылка на файл -> скачивание в ~/Downloads
   - сообщение вида "brew install htop" / "brew install --cask firefox" -> установка
-  - ссылка на стрим + отрезок времени -> вырезает фрагмент (yt-dlp) в ~/TechGuy/downloads
+  - ссылка на стрим + отрезок времени -> вырезает фрагмент (yt-dlp) в ~/Downloads
       пример: https://twitch.tv/videos/123456 05:00:00-06:30:00
+  - во время работы показывает живой прогресс-бар [####------] 40% в сообщении
   - /status -> состояние бота и диска
 
 Безопасность:
@@ -42,9 +43,10 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 ALLOWED_USER_ID = int(os.getenv("ALLOWED_USER_ID", "0"))
 BASE_DIR = Path(os.getenv("BASE_DIR", "~/TechGuy")).expanduser()
-DOWNLOADS_DIR = BASE_DIR / "downloads"
+DOWNLOADS_DIR = Path(os.getenv("DOWNLOADS_DIR", "~/Downloads")).expanduser()
 REPOS_DIR = BASE_DIR / "repos"
 COMMAND_TIMEOUT = int(os.getenv("COMMAND_TIMEOUT", "3600"))  # секунд на одну команду
+PROGRESS_EDIT_INTERVAL = 4  # как часто (сек) обновлять прогресс-бар в сообщении
 
 DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 REPOS_DIR.mkdir(parents=True, exist_ok=True)
@@ -80,6 +82,9 @@ FORBIDDEN_PATTERNS = [
     r"\bchmod\s+-R\s+777\s+/",
 ]
 
+BAR_WIDTH = 12  # длина прогресс-бара в символах: [######------]
+SPINNER = "⠋⠙⠹⠸⠼⠴⦋⦧⦇⦏"
+
 START_TIME = time.time()
 
 bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -97,6 +102,11 @@ def forbidden_reason(cmd: str) -> bool:
     return any(re.search(p, cmd) for p in FORBIDDEN_PATTERNS)
 
 
+def render_bar(pct: float) -> str:
+    filled = max(0, min(BAR_WIDTH, round(pct / 100 * BAR_WIDTH)))
+    return "[" + "#" * filled + "-" * (BAR_WIDTH - filled) + "]"
+
+
 def classify(text: str) -> list[tuple[str, str]] | None:
     """Превращает сообщение в план: список (человеческое описание, shell-команда)."""
     text = text.strip()
@@ -111,7 +121,7 @@ def classify(text: str) -> list[tuple[str, str]] | None:
         safe_name = f"clip_{t_start.replace(':', '')}-{t_end.replace(':', '')}"
         dest_tpl = str(DOWNLOADS_DIR / f"{safe_name}.%(ext)s")
         ytdlp_cmd = (
-            f"{shlex.quote(YTDLP)} --download-sections \"*{t_start}-{t_end}\" "
+            f"{shlex.quote(YTDLP)} --newline --download-sections \"*{t_start}-{t_end}\" "
             f"-f \"bv*[height<=1080]+ba/b[height<=1080]/b\" --merge-output-format mp4 "
             f"--no-playlist -o {shlex.quote(dest_tpl)} {shlex.quote(url)}"
         )
@@ -153,8 +163,9 @@ def classify(text: str) -> list[tuple[str, str]] | None:
     return None
 
 
-async def run_plan(plan: list[tuple[str, str]]) -> tuple[list[str], bool]:
-    """Выполняет план по шагам. Останавливается на первой ошибке."""
+async def run_plan(plan: list[tuple[str, str]], status: Message | None = None) -> tuple[list[str], bool]:
+    """Выполняет план по шагам. Останавливается на первой ошибке.
+    Если передано сообщение status — обновляет в нём прогресс-бар / спиннер."""
     reports: list[str] = []
     for desc, cmd in plan:
         if forbidden_reason(cmd):
@@ -166,14 +177,54 @@ async def run_plan(plan: list[tuple[str, str]]) -> tuple[list[str], bool]:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
-        try:
-            out, _ = await asyncio.wait_for(proc.communicate(), COMMAND_TIMEOUT)
-        except asyncio.TimeoutError:
-            proc.kill()
+        buf: list[str] = []
+        pct: float | None = None
+        spin = 0
+        last_edit = 0.0
+        t0 = time.time()
+        timed_out = False
+
+        while True:
+            if time.time() - t0 > COMMAND_TIMEOUT:
+                proc.kill()
+                timed_out = True
+                break
+            try:
+                line = await asyncio.wait_for(proc.stdout.readline(), 1.0)
+            except asyncio.TimeoutError:
+                line = b""
+            if line:
+                chunk = line.decode(errors="replace")
+                buf.append(chunk)
+                # yt-dlp печатает прогресс как "[download]  42.3% of ..."
+                m = re.search(r"\[download\]\s+~?\s*([\d.]+)%", chunk)
+                if m:
+                    pct = float(m.group(1))
+            elif proc.stdout.at_eof():
+                break
+
+            now = time.time()
+            if status is not None and now - last_edit >= PROGRESS_EDIT_INTERVAL:
+                last_edit = now
+                elapsed = int(now - t0)
+                if pct is not None:
+                    text = (f"⚙️ <b>{escape(desc)}</b>\n"
+                            f"<code>{render_bar(pct)} {pct:5.1f}%</code> ({elapsed} сек)")
+                else:
+                    text = (f"⚙️ <b>{escape(desc)}</b>\n"
+                            f"{SPINNER[spin % len(SPINNER)]} работаю… ({elapsed} сек)")
+                    spin += 1
+                try:
+                    await status.edit_text(text)
+                except Exception:
+                    pass  # Telegram ругается на одинаковый текст/флуд — просто пропускаем
+
+        await proc.wait()
+        if timed_out:
             reports.append(f"⏱ <b>{escape(desc)}</b>\nТаймаут {COMMAND_TIMEOUT} сек — процесс убит.")
             return reports, False
 
-        output = (out or b"").decode(errors="replace").strip()[-2500:]
+        output = "".join(buf).strip()[-2500:]
         ok = proc.returncode == 0
         icon = "✅" if ok else "❌"
         reports.append(f"{icon} <b>{escape(desc)}</b>\n<code>{escape(output) or '(нет вывода)'}</code>")
@@ -190,10 +241,11 @@ async def on_start(message: Message) -> None:
         "🤖 <b>TechGuy на связи.</b>\n\n"
         "Кидай:\n"
         "• ссылку на GitHub — склонирую в ~/TechGuy/repos\n"
-        "• ссылку на файл — скачаю в ~/TechGuy/downloads\n"
+        "• ссылку на файл — скачаю в ~/Downloads\n"
         "• <code>brew install &lt;пакет&gt;</code> — поставлю через Homebrew\n"
         "• <b>ссылку на стрим + время</b> — вырежу фрагмент, напр.:\n"
         "<code>https://twitch.tv/videos/123 05:00:00-06:30:00</code>\n\n"
+        "Во время работы показываю прогресс-бар прямо в сообщении. "
         "Каждое действие сначала покажу планом и спрошу подтверждение. /status — состояние."
     )
 
@@ -256,8 +308,8 @@ async def on_decision(call: CallbackQuery) -> None:
         await call.message.edit_text("🚫 Отменено.")
         return
 
-    await call.message.edit_text("⚙️ Выполняю, это может занять пару минут…")
-    reports, ok = await run_plan(task["plan"])
+    await call.message.edit_text("⚙️ Запускаю…")
+    reports, ok = await run_plan(task["plan"], status=call.message)
     header = "✅ <b>Готово.</b>" if ok else "⚠️ <b>Остановился на ошибке:</b>"
     await call.message.edit_text(header + "\n\n" + "\n\n".join(reports))
 
@@ -265,7 +317,7 @@ async def on_decision(call: CallbackQuery) -> None:
 async def main() -> None:
     if not BOT_TOKEN or not ALLOWED_USER_ID:
         raise SystemExit("Заполни BOT_TOKEN и ALLOWED_USER_ID в файле .env")
-    print(f"TechGuy запущен. Владелец: {ALLOWED_USER_ID}. База: {BASE_DIR}")
+    print(f"TechGuy запущен. Владелец: {ALLOWED_USER_ID}. База: {BASE_DIR}. Загрузки: {DOWNLOADS_DIR}")
     await dp.start_polling(bot)
 
 
