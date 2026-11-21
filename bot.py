@@ -340,16 +340,34 @@ async def run_split(url: str, t_start: int, t_end: int | None, status: Message) 
             f"(по {CHUNK_SECONDS // 60} мин, 720p).\n"
             f"Качаю целиком через aria2 в 16 потоков — так YouTube не режет скорость.")
         src_tpl = str(TMP_DIR / "source.%(ext)s")
-        cmd = (
+        aria2_args = (
+            "--downloader aria2c "
+            "--downloader-args \"aria2c:-x 16 -s 16 -k 1M --async-dns=false "
+            "--console-log-level=warn --summary-interval=5\" "
+        )
+        base_cmd = (
             f"{shlex.quote(YTDLP)} --newline --no-cache-dir "
             f"-f \"bv*[height<=720]+ba/b[height<=720]/b\" --merge-output-format mp4 "
-            f"--downloader aria2c "
-            f"--downloader-args \"aria2c:-x 16 -s 16 -k 1M --console-log-level=warn --summary-interval=5\" "
-            f"--no-playlist{COOKIES_OPT} -o {shlex.quote(src_tpl)} {shlex.quote(url)}"
+            f"{{DL}}--no-playlist{COOKIES_OPT} -o {shlex.quote(src_tpl)} {shlex.quote(url)}"
         )
         out, ok, timed_out = await exec_cmd(
-            cmd, f"Качаю видео ({fmt_hms(full_dur)}, 720p, 16 потоков)", status)
+            base_cmd.replace("{DL}", aria2_args),
+            f"Качаю видео ({fmt_hms(full_dur)}, 720p, 16 потоков)", status)
         sources = [f for f in TMP_DIR.glob("source.*") if f.suffix != ".part"]
+        if not ok or not sources:
+            # aria2 не справилась (обычно DNS errorCode=19) — качаем обычным способом
+            for junk in TMP_DIR.glob("source.*"):
+                junk.unlink(missing_ok=True)
+            try:
+                await status.edit_text(
+                    "⚠️ aria2 не смогла (DNS в твоей сети). "
+                    "Качаю обычным способом — медленнее, но надёжно…")
+            except Exception:
+                pass
+            out, ok, timed_out = await exec_cmd(
+                base_cmd.replace("{DL}", ""),
+                f"Качаю видео ({fmt_hms(full_dur)}, 720p)", status)
+            sources = [f for f in TMP_DIR.glob("source.*") if f.suffix != ".part"]
         if not ok or not sources:
             tail = escape(out[-1500:]) or "(нет вывода)"
             clean_tmp()
