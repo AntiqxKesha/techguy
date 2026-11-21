@@ -20,10 +20,10 @@ Telegram-бот, который живёт на твоём Маке и дела�
 
 ```bash
 cd ~
-git clone https://github.com/AntiqxKesha/techguy.git tech-guy-bot
+# распакуй архив, если ещё не: unzip Технарь-бот_MVP.zip
+python3 -m venv techguy-venv
+source techguy-venv/bin/activate
 cd tech-guy-bot
-python3 -m venv ../techguy-venv
-source ../techguy-venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
 nano .env        # вставь BOT_TOKEN и ALLOWED_USER_ID
@@ -54,9 +54,15 @@ launchctl load ~/Library/LaunchAgents/com.techguy.bot.plist
 | Ты пишешь | Бот делает |
 |---|---|
 | `https://github.com/user/repo` | `git clone` в `~/TechGuy/repos` (или `git pull`, если уже есть) |
-| ссылка на файл (.dmg, .zip, ...) | скачивает в `~/TechGuy/downloads` |
+| ссылка на файл (.dmg, .zip, ...) | скачивает в `~/Downloads` |
 | `brew install htop` / `brew install --cask firefox` | установка через Homebrew |
+| `<ссылка> 05:00:00-06:30:00` | вырезает фрагмент видео (yt-dlp) в `~/Downloads` |
+| `нарежь <ссылка>` / `нарежь <ссылка> 03:00:00-06:00:00` | режет видео на части по 90 мин (720p) и складывает в `~/Downloads` |
 | `/status` | аптайм, свободное место, пути |
+
+Скачивание ускорено через **aria2** (16 потоков) — обходит троттлинг YouTube.
+Для YouTube-роликов с bot-check включи `YTDLP_COOKIES=safari` в `.env`
+(cookies берутся из браузера, где ты залогинен).
 
 Каждое действие — только после твоего подтверждения кнопкой.
 
@@ -65,7 +71,6 @@ launchctl load ~/Library/LaunchAgents/com.techguy.bot.plist
 - Бот отвечает только твоему Telegram ID, остальных молча игнорирует.
 - Чёрный список команд: `sudo`, `rm -rf /`, `dd` в `/dev`, `shutdown` и т.п. — заблокированы.
 - Все команды видны в плане ДО выполнения.
-- `.env` с токеном в `.gitignore` — в репозиторий не попадёт.
 
 ## Куда расти дальше
 
